@@ -5,26 +5,39 @@ import shutil
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QPushButton, QLabel,
     QFileDialog, QLineEdit, QMessageBox, QHBoxLayout, QProgressBar,
-    QCheckBox, QComboBox
-)
+    QCheckBox, QComboBox, QSizePolicy)
 from PyQt5.QtGui import QFont, QPixmap
 from PyQt5.QtCore import Qt, QTimer
+
+import torch
+import timm
+
+from src.yolo_and_ResNet import predict_image_class
 
 
 class ImageSorterApp(QWidget):
     def __init__(self):
         super().__init__()
 
+        self.yolo_model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True)
+        
+        self.classify_model = timm.create_model('resnext50_32x4d.a3_in1k', pretrained=False)
+        model_state_dict = torch.load('best_model_ResNet_20.pth', map_location=torch.device('cpu'))
+        self.classify_model.load_state_dict(model_state_dict)
+        self.classify_model.eval()
+
+        data_config = timm.data.resolve_model_data_config(self.classify_model)
+        self.transforms = timm.data.create_transform(**data_config, is_training=False)
+
         self.classes = {
-            0: "Олень",
+            2: "Олень",
             1: "Косуля",
-            2: "Кабала", 
+            0: "Кабарга", 
             3: "Пусто",
         }
         
         self.methods = {
-            "Случайно": self.distribute_randomly,
-            "Равномерно": self.distribute_evenly,
+            "ResNet_20": self.distribute_ResNet_20,
         }
 
         self.initUI()
@@ -35,7 +48,9 @@ class ImageSorterApp(QWidget):
 
         self.layout = QVBoxLayout()
 
+        #region: choose folder
         self.folder_layout = QHBoxLayout()
+
         self.folder_path = QLineEdit(self)
         self.folder_path.setPlaceholderText("Выберите папку...")
         self.folder_layout.addWidget(self.folder_path)
@@ -45,37 +60,59 @@ class ImageSorterApp(QWidget):
         self.folder_layout.addWidget(self.browse_button)
 
         self.layout.addLayout(self.folder_layout)
+        #endregion
+        
+        #region: controls
+        self.control_layout = QHBoxLayout()
 
         self.start_button = QPushButton('Начать', self)
         self.start_button.clicked.connect(self.start_action)
         self.start_button.setStyleSheet("background-color: #4CAF50; color: white; font-size: 16px; padding: 10px;")
-        self.layout.addWidget(self.start_button)
+        self.control_layout.addWidget(self.start_button)
+        
+        self.stop_button = QPushButton('Остановить', self)
+        self.stop_button.clicked.connect(self.stop_action)
+        self.stop_button.setStyleSheet("background-color: #4CAF50; color: white; font-size: 16px; padding: 10px;")
+        self.control_layout.addWidget(self.stop_button)
 
-        self.manual_classification_checkbox = QCheckBox('Классифицировать вручную', self)
-        self.layout.addWidget(self.manual_classification_checkbox)
+        self.layout.addLayout(self.control_layout)
+        #endregion
 
-        self.distribution_mode_label = QLabel('Режим распределения:', self)
-        self.distribution_mode_label.setFont(QFont('Arial', 12))
-        self.layout.addWidget(self.distribution_mode_label)
+        #region: choose model
+        self.model_layout = QHBoxLayout()
+
+        self.distribution_mode_label = QLabel('Модель для классификации:', self)
+        self.model_layout.addWidget(self.distribution_mode_label)
 
         self.distribution_mode_combo = QComboBox(self)
         self.distribution_mode_combo.addItems(self.methods.keys())
-        self.layout.addWidget(self.distribution_mode_combo)
+        self.model_layout.addWidget(self.distribution_mode_combo)
 
-        self.image_count_label = QLabel('Количество изображений: 0', self)
+        self.layout.addLayout(self.model_layout)
+
+        self.manual_classification_checkbox = QCheckBox('Классифицировать вручную', self)
+        self.layout.addWidget(self.manual_classification_checkbox)
+        #endregion
+
+        self.image_count_text = 'Количество изображений: '
+        self.image_count_label = QLabel(self.image_count_text + '0', self)
+        self.image_count_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.image_count_label.setFont(QFont('Arial', 14))
-        self.image_count_label.setAlignment(Qt.AlignCenter)
+        self.image_count_label.setAlignment(Qt.AlignHCenter)
         self.layout.addWidget(self.image_count_label)
 
-        self.subfolder_image_counts_label = QLabel(
-            'Количество изображений в папках:\nОлень: 0\nКосуля: 0\nКабала: 0\nПусто: 0', self)
+        self.subfolder_image_counts_text = 'Количество изображений в папках:\n'
+        self.subfolder_image_counts_label = QLabel(self.subfolder_image_counts_text + 
+                                                   "".join(map(lambda x: x + ': 0\n', self.classes.values())), self)
+        self.image_count_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.subfolder_image_counts_label.setFont(QFont('Arial', 14))
-        self.subfolder_image_counts_label.setAlignment(Qt.AlignCenter)
+        self.subfolder_image_counts_label.setAlignment(Qt.AlignHCenter)
+
         self.layout.addWidget(self.subfolder_image_counts_label)
 
         self.current_image_label = QLabel('Текущее изображение:', self)
         self.current_image_label.setFont(QFont('Arial', 14))
-        self.current_image_label.setAlignment(Qt.AlignCenter)
+        self.current_image_label.setAlignment(Qt.AlignHCenter)
         self.layout.addWidget(self.current_image_label)
 
         self.image_display_label = QLabel(self)
@@ -96,18 +133,6 @@ class ImageSorterApp(QWidget):
 
         self.progress_bar = QProgressBar(self)
         self.layout.addWidget(self.progress_bar)
-
-        self.control_layout = QHBoxLayout()
-        
-        self.pause_button = QPushButton('Пауза', self)
-        self.pause_button.clicked.connect(self.pause_action)
-        self.control_layout.addWidget(self.pause_button)
-
-        self.stop_button = QPushButton('Остановить', self)
-        self.stop_button.clicked.connect(self.stop_action)
-        self.control_layout.addWidget(self.stop_button)
-
-        self.layout.addLayout(self.control_layout)
 
         self.setLayout(self.layout)
 
@@ -136,9 +161,9 @@ class ImageSorterApp(QWidget):
         folder = self.folder_path.text()
         if folder:
             count = self.count_images_in_folder(folder)
-            self.image_count_label.setText(f'Количество изображений: {count}')
+            self.image_count_label.setText(self.image_count_text + str(count))
         else:
-            self.image_count_label.setText('Количество изображений: 0')
+            self.image_count_label.setText(self.image_count_text + '0')
 
     @staticmethod
     def count_images_in_folder(folder):
@@ -152,6 +177,9 @@ class ImageSorterApp(QWidget):
         if folder:
             self.create_folders(folder)
             self.images_to_move = self.get_images(folder)
+            if not len(self.images_to_move): 
+                QMessageBox.warning(self, 'Предупреждение', 'Изображений не найдено!\nПожалуйста, выберите другую папку')
+                return
             self.progress_bar.setMaximum(len(self.images_to_move))
             self.current_image_index = 0
             if self.manual_classification_checkbox.isChecked():
@@ -159,7 +187,7 @@ class ImageSorterApp(QWidget):
                 self.display_current_image(os.path.join(folder, self.images_to_move[self.current_image_index]))
             else:
                 self.set_manual_classification_visible(False)
-                self.timer.start(0)  # 100 мс задержка для плавного перемещения
+                self.timer.start(0)  
         else:
             QMessageBox.warning(self, 'Предупреждение', 'Пожалуйста, выберите папку')
 
@@ -173,12 +201,18 @@ class ImageSorterApp(QWidget):
         self.progress_bar.setValue(self.current_image_index)
         self.update_subfolder_image_counts(self.folder_path.text())
 
-    def distribute_randomly(self, image_path):
-        """принимает путь до изображения
-        возвращает 0, 1, 2 или 3
-        """
-
-        return random.choice(list(self.classes.keys()))
+    def distribute_ResNet_20(self, image_path):
+        predicted_class_idx = 3
+        try:
+            predicted_class_idx = predict_image_class(image_path, 
+                                                      self.classify_model, 
+                                                      self.transforms, 
+                                                      self.yolo_model,
+                                                      return_not_found=True)
+        except Exception as ex:
+            QMessageBox.warning(self, 'Ошибка!', f'Возникла проблема при обработке изображения {image_path}')
+        print(predicted_class_idx)
+        return predicted_class_idx
 
     def distribute_evenly(self, image_path):
         return self.current_image_index % len(self.subfolders)
@@ -195,7 +229,7 @@ class ImageSorterApp(QWidget):
         return [f for f in os.listdir(folder) if os.path.splitext(f)[1].lower() in image_extensions]
 
     def move_next_image(self):
-        if not self.is_paused and not self.is_stopped and self.current_image_index < len(self.images_to_move):
+        if not self.is_stopped and self.current_image_index < len(self.images_to_move):
             distribution_mode = self.distribution_mode_combo.currentText()
             distribution_mode = self.distribution_mode_combo.currentText()
             distribution_method = self.methods[distribution_mode]
@@ -206,8 +240,6 @@ class ImageSorterApp(QWidget):
             if self.manual_classification_checkbox.isChecked():
                 self.current_image_label.setText('Текущее изображение:')
                 self.image_display_label.clear()
-            if not self.is_stopped:
-                QMessageBox.information(self, 'Информация', 'Изображения перемещены в папки.')
 
     def move_image_manually(self, folder):
         if self.current_image_index < len(self.images_to_move):
@@ -227,20 +259,8 @@ class ImageSorterApp(QWidget):
                 self.image_display_label.clear()
                 QMessageBox.information(self, 'Информация', 'Изображения перемещены в папки.')
 
-    def pause_action(self):
-        self.is_paused = not self.is_paused
-        if self.is_paused:
-            self.pause_button.setText('Возобновить')
-        else:
-            self.pause_button.setText('Пауза')
-
     def stop_action(self):
         self.is_stopped = True
-        self.timer.stop()
-        self.update_image_count()
-        self.current_image_label.setText('Текущее изображение:')
-        self.image_display_label.clear()
-        QMessageBox.information(self, 'Информация', 'Операция остановлена.')
 
     def display_current_image(self, image_path):
         pixmap = QPixmap(image_path)
@@ -250,7 +270,7 @@ class ImageSorterApp(QWidget):
     def update_subfolder_image_counts(self, folder):
         subfolders = self.classes.values()
         counts = {}
-        text = f'Количество изображений в папках:\n'
+        text = self.subfolder_image_counts_text
         for subfolder in subfolders:
             subfolder_path = os.path.join(folder, subfolder)
             counts[subfolder] = self.count_images_in_folder(subfolder_path)
