@@ -26,4 +26,4 @@
 ***
 ## Репозиторий с нейронками: [тык](https://github.com/sherstpasha/artiodactyls_classification)
 ***
-## Репозиторий с мобильным приложением: [тык]()
+## Репозиторий с мобильным приложением: [тык](https://disk.yandex.ru/d/e4i-9WBeKoU9DQ)
